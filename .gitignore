@@ -1,0 +1,27 @@
+# Arduino build artifacts
+build/
+*.elf
+*.bin
+*.hex
+*.map
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+platformio.ini.bak
+
+# Arduino IDE
+*.bak
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Secrets — NEVER commit credentials
+firmware/GreeZoneController/secrets.h
+
+# VSCode
+.vscode/
+*.code-workspace
