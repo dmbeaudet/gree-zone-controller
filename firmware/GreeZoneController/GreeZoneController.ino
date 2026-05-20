@@ -23,7 +23,6 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
-#include <SoftwareSerial.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
@@ -31,6 +30,7 @@
 #include "config.h"
 #include "protocol.h"
 #include "pressure.h"
+#include "sc16is752.h"
 #include "secrets.h"
 
 // =============================================================================
@@ -46,7 +46,7 @@
 HardwareSerial SerialCN(1);   // UART1 → CN port (air handler)
 HardwareSerial SerialZ1(2);   // UART2 → Zone 1 thermostat RS485
 HardwareSerial SerialZ2(0);   // UART0 → Zone 2 thermostat RS485 (8E1, requires USB CDC On Boot)
-SoftwareSerial SerialZ3(Z3_RX_PIN, Z3_TX_PIN);  // Zone 3 — 8N1 only, see config.h
+SC16IS752      serialZ3;      // I2C UART expander → Zone 3 thermostat RS485 (8E1)
 
 // =============================================================================
 // GLOBAL STATE
@@ -123,10 +123,10 @@ void sendToAH(const uint8_t* pkt, uint8_t len) {
 // =============================================================================
 void sendThermostatResponse(uint8_t zone) {
     const int dePins[3] = { Z1_DE_PIN, Z2_DE_PIN, Z3_DE_PIN };
-    // Zones 0 and 1 now both use HardwareSerial (UART2 and UART0 respectively).
-    // Zone 2 still uses SoftwareSerial; sw->write() is synchronous at 4800 baud.
+    // All three zones now use blocking write methods:
+    //   Zones 0/1: HardwareSerial — hw->flush() blocks until TX buffer drains
+    //   Zone 2:    SC16IS752      — write() polls LSR[TEMT] until shift reg empty
     HardwareSerial* hw = (zone == 0) ? &SerialZ1 : (zone == 1 ? &SerialZ2 : nullptr);
-    SoftwareSerial* sw = (zone == 2) ? &SerialZ3 : nullptr;
 
     uint8_t respBuf[64];
     buildStatusResponse(respBuf, ah, zones[zone].setpointC, zones[zone].roomTempC);
@@ -136,11 +136,12 @@ void sendThermostatResponse(uint8_t zone) {
     digitalWrite(dePins[zone], HIGH);
     delayMicroseconds(50);   // DE setup time
 
-    // hw->flush() blocks until the hardware TX buffer drains.
-    // sw->write() is synchronous — it bit-bangs each byte before returning.
-    // Neither needs an additional delay before releasing DE.
-    if (hw) { hw->write(respBuf, respLen); hw->flush(); }
-    else if (sw) { sw->write(respBuf, respLen); }
+    if (hw) {
+        hw->write(respBuf, respLen);
+        hw->flush();
+    } else if (serialZ3.healthy) {
+        serialZ3.write(respBuf, respLen);   // blocks until LSR[TEMT]
+    }
 
     // Switch MAX485 back to receive
     digitalWrite(dePins[zone], LOW);
@@ -587,9 +588,16 @@ void setup() {
 
     // Zone 2 RS485 — UART0 remapped to Z2 pins, full 8E1 parity
     SerialZ2.begin(4800, SERIAL_8E1, Z2_RX_PIN, Z2_TX_PIN);
-    // Zone 3 RS485 — SoftwareSerial 8N1 (parity not supported — see config.h)
-    SerialZ3.begin(4800);
     pinMode(Z2_DE_PIN, OUTPUT); digitalWrite(Z2_DE_PIN, LOW);
+
+    // Zone 3 RS485 — SC16IS752 I2C UART expander, channel A, 4800 8E1
+    // Wire is already initialised above for the SDP810.
+    // If the module is not yet installed, begin() returns false and Zone 3
+    // stays disabled until the next power cycle.
+    if (!serialZ3.begin(Wire, SC16IS752_I2C_ADDR, SC16IS752_CHANNEL,
+                        SC16IS752_CRYSTAL_HZ, 4800)) {
+        Serial.println("[BOOT] WARNING: SC16IS752 not found — Zone 3 disabled");
+    }
     pinMode(Z3_DE_PIN, OUTPUT); digitalWrite(Z3_DE_PIN, LOW);
 
     // Relay outputs — all closed (safe state)
@@ -689,10 +697,14 @@ void loop() {
         if (parserFeed(&parserZ2, (uint8_t)SerialZ2.read(), &pkt))
             processThermostatPkt(1, &pkt);
     }
-    while (SerialZ3.available()) {
-        GreePkt pkt;
-        if (parserFeed(&parserZ3, (uint8_t)SerialZ3.read(), &pkt))
-            processThermostatPkt(2, &pkt);
+    if (serialZ3.healthy) {
+        while (serialZ3.available()) {
+            int b = serialZ3.read();
+            if (b < 0) break;
+            GreePkt pkt;
+            if (parserFeed(&parserZ3, (uint8_t)b, &pkt))
+                processThermostatPkt(2, &pkt);
+        }
     }
 
     // ── Pressure sensor ───────────────────────────────────────────────────────
