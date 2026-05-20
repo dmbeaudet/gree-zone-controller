@@ -60,6 +60,7 @@
 // buf[15]   = ECO flag
 // buf[20]   = ROOM TEMP (candidate — verify during Phase 2 commissioning)
 //             encoded same as setpoint: (roomTemp_C - 16) << 4
+// buf[43]   = 0x02 (fixed — purpose unknown, observed in protocol RE captures)
 // buf[46]   = checksum
 
 #define PKT_OFF_CMD         7
@@ -229,7 +230,7 @@ inline void buildControlPkt(uint8_t* out,
         out[PKT_OFF_ROOM_TEMP] = TEMP_ENCODE(virtualRoomTempC);
     }
 
-    out[43] = 0x02;
+    out[43] = 0x02;   // fixed — see byte-offset table above
     out[PKT_OFF_CHECKSUM] = greeChecksum(out);
 }
 

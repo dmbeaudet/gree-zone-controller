@@ -176,22 +176,62 @@ gree_zone/phase                1, 2, or 3
 
 ---
 
-## 9. Known TODOs (v0.2)
+## 9. Arduino IDE board setting required for Zone 2
 
-1. **Thermostat response packet** — the ESP32 must respond to each
-   thermostat's poll with a 0x2F status packet (fake air handler slave).
-   Without this, thermostats will show a communication error after ~5 seconds.
-   Response must include current indoor temp, powered state, and mode.
+Zone 2 uses UART0 remapped to its RS485 pins. For this to work without
+conflicting with the debug Serial port, you must enable USB CDC On Boot:
 
-2. **SoftwareSerial parity** — EspSoftwareSerial does not support 8E1.
-   If Zones 2/3 show frequent bad-checksum packets, replace with:
-   - SC16IS752 dual UART expander (I2C, ~$8)
-   - OR second ESP32 dedicated to zones 2+3 bridged via I2C/UART
+**Arduino IDE:** Tools → USB CDC On Boot → **Enabled**
+
+**arduino-cli:**
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc \
+  firmware/GreeZoneController
+```
+
+With this setting, `Serial` (debug output) moves to the native USB port
+(D+/D−), and UART0 hardware is free for Zone 2 RS485 at full 8E1 parity.
+
+---
+
+## 10. Zone 3 — SC16IS752 hardware fix required
+
+Zone 3 still uses EspSoftwareSerial which does not support 8E1 parity.
+The 0x7E packet-header byte has even parity (parity bit = 0), which
+software UART (8N1) misinterprets as a start bit on every packet. Zone 3
+will not decode thermostat packets reliably until this is resolved.
+
+**Fix:** Add an SC16IS752 I2C dual-UART expander (~$8).
+
+Wiring (shares the existing I2C bus on GPIO 38/39):
+```
+SC16IS752 SDA → GPIO 38   (PRESSURE_SDA_PIN)
+SC16IS752 SCL → GPIO 39   (PRESSURE_SCL_PIN)
+SC16IS752 A0  → GND       (I2C address 0x48)
+SC16IS752 A1  → GND
+SC16IS752 XTAL→ 1.8432 MHz crystal (for exact 4800 baud)
+SC16IS752 CH_A TX → Z3_TX_PIN
+SC16IS752 CH_A RX ← Z3_RX_PIN
+```
+
+Firmware change: replace `SoftwareSerial SerialZ3` with the SC16IS752
+Arduino library and configure channel A for 4800 8E1.
+
+---
+
+## 11. Known open items (v0.2)
+
+1. **Zone 3 SC16IS752** — see §10 above.
+
+2. **Room temp byte (PKT_OFF_ROOM_TEMP)** — byte 20 is an unverified guess.
+   Confirm during Phase 2 using the byte-scan output, then set
+   `ROOM_TEMP_BYTE_VERIFIED true` in config.h.
 
 3. **Fahrenheit support** — setpoints arrive in °C from WK-010WC1.
-   Add F/C conversion if local display is configured for °F.
+   Add F/C conversion if thermostats are configured to display °F.
 
-4. **Minimum on-time / anti-short-cycle** — add 3-minute minimum run
-   before allowing a zone call to turn the system off, protecting the compressor.
+4. **OTA firmware updates** — add ArduinoOTA before final enclosure
+   install to avoid needing physical access for future updates.
 
-5. **OTA firmware update** — add ArduinoOTA for wireless updates.
+5. **MQTT PID runtime tuning** — add MQTT subscribe topics for KP/KI/KD
+   so gains can be adjusted from Home Assistant without a serial connection.
