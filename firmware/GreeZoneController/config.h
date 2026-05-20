@@ -34,13 +34,13 @@
 #define Z2_TX_PIN       11
 #define Z2_DE_PIN       13
 
-// Zone 3 RS485 — SoftwareSerial (8N1 only — 8E1 parity NOT supported)
-// Zone 3 thermostat communication will fail due to parity framing errors.
-// Fix: replace with SC16IS752 I2C dual-UART expander (~$8, shares I2C bus).
-// See COMMISSIONING.md §10 for wiring details.
-#define Z3_RX_PIN        9
-#define Z3_TX_PIN        8
-#define Z3_DE_PIN       10
+// Zone 3 RS485 — SC16IS752 I2C dual-UART expander (channel A)
+// Z3_TX_PIN and Z3_RX_PIN are unused in firmware (SC16IS752 drives the bus).
+// GPIOs 8 and 9 are free for other use once Zone 3 is wired to SC16IS752.
+// Z3_DE_PIN is still used by ESP32 for manual MAX485 direction control.
+#define Z3_RX_PIN        9   // unused (was SoftwareSerial RX)
+#define Z3_TX_PIN        8   // unused (was SoftwareSerial TX)
+#define Z3_DE_PIN       10   // MAX485 DE/RE — still driven by ESP32 GPIO
 
 // Damper relays (active HIGH = damper open, LOW = spring-return closed)
 #define Z1_RELAY_PIN     4
@@ -88,6 +88,13 @@
 
 // SDP810-500Pa scale factor (LSB per Pa, from Sensirion datasheet)
 #define SDP810_SCALE_FACTOR     240     // 500Pa model = 240
+
+// ── SC16IS752 I2C dual-UART expander (Zone 3 RS485) ──────────────────────────
+// Crystal frequency on the purchased module: 14.7456 MHz
+// Baud rate divisor = 14745600 / (4800 × 16) = 192  (exact, no rounding)
+#define SC16IS752_CRYSTAL_HZ    14745600UL
+#define SC16IS752_I2C_ADDR      0x48    // A0=GND, A1=GND
+#define SC16IS752_CHANNEL       0       // 0 = channel A
 
 // ── Timing ────────────────────────────────────────────────────────────────────
 

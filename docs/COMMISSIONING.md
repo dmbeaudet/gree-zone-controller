@@ -194,28 +194,43 @@ With this setting, `Serial` (debug output) moves to the native USB port
 
 ---
 
-## 10. Zone 3 — SC16IS752 hardware fix required
+## 10. Zone 3 — SC16IS752 hardware installation
 
-Zone 3 still uses EspSoftwareSerial which does not support 8E1 parity.
-The 0x7E packet-header byte has even parity (parity bit = 0), which
-software UART (8N1) misinterprets as a start bit on every packet. Zone 3
-will not decode thermostat packets reliably until this is resolved.
+Zone 3 thermostat RS485 is handled by the SC16IS752 I2C dual-UART expander.
+The firmware driver is bundled in `sc16is752.h` — no external library needed.
 
-**Fix:** Add an SC16IS752 I2C dual-UART expander (~$8).
+**On-module crystal: 14.7456 MHz**
+Baud rate divisor = 14,745,600 / (4800 × 16) = **192** (exact integer, no error)
 
-Wiring (shares the existing I2C bus on GPIO 38/39):
+### Wiring
+
 ```
-SC16IS752 SDA → GPIO 38   (PRESSURE_SDA_PIN)
-SC16IS752 SCL → GPIO 39   (PRESSURE_SCL_PIN)
-SC16IS752 A0  → GND       (I2C address 0x48)
-SC16IS752 A1  → GND
-SC16IS752 XTAL→ 1.8432 MHz crystal (for exact 4800 baud)
-SC16IS752 CH_A TX → Z3_TX_PIN
-SC16IS752 CH_A RX ← Z3_RX_PIN
+SC16IS752 VCC  → 3.3V
+SC16IS752 GND  → GND
+SC16IS752 SDA  → GPIO 38  (PRESSURE_SDA_PIN — shared I2C bus with SDP810)
+SC16IS752 SCL  → GPIO 39  (PRESSURE_SCL_PIN — shared I2C bus with SDP810)
+SC16IS752 A0   → GND  ──┐  I2C address = 0x48
+SC16IS752 A1   → GND  ──┘
+SC16IS752 TXD  → Z3 MAX485 DI  (pin 4 of the Zone 3 MAX485 module)
+SC16IS752 RXD  ← Z3 MAX485 RO  (pin 1 of the Zone 3 MAX485 module)
 ```
 
-Firmware change: replace `SoftwareSerial SerialZ3` with the SC16IS752
-Arduino library and configure channel A for 4800 8E1.
+**Note:** The ESP32 Z3_TX_PIN (GPIO 8) and Z3_RX_PIN (GPIO 9) are no longer
+used — leave them disconnected or repurpose them. The ESP32 Z3_DE_PIN
+(GPIO 10) still connects to the Zone 3 MAX485 DE/RE pins for direction
+control — this wire does not change.
+
+### Commissioning Zone 3
+
+After wiring, power-cycle the controller. The serial monitor will show:
+
+```
+[SC16IS752] chA OK — 4800 baud 8E1 (crystal=14745600Hz div=192)
+```
+
+If you see `SC16IS752 Init FAIL` instead, check SDA/SCL connections and
+confirm A0/A1 are tied to GND (address 0x48). If the module is absent,
+Zone 3 is automatically disabled; the other two zones continue normally.
 
 ---
 
