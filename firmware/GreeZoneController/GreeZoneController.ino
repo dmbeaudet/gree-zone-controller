@@ -43,10 +43,10 @@
 // =============================================================================
 // SERIAL PORTS
 // =============================================================================
-HardwareSerial SerialCN(1);              // UART1 → CN port (air handler)
-HardwareSerial SerialZ1(2);             // UART2 → Zone 1 thermostat RS485
-SoftwareSerial SerialZ2(Z2_RX_PIN, Z2_TX_PIN);
-SoftwareSerial SerialZ3(Z3_RX_PIN, Z3_TX_PIN);
+HardwareSerial SerialCN(1);   // UART1 → CN port (air handler)
+HardwareSerial SerialZ1(2);   // UART2 → Zone 1 thermostat RS485
+HardwareSerial SerialZ2(0);   // UART0 → Zone 2 thermostat RS485 (8E1, requires USB CDC On Boot)
+SoftwareSerial SerialZ3(Z3_RX_PIN, Z3_TX_PIN);  // Zone 3 — 8N1 only, see config.h
 
 // =============================================================================
 // GLOBAL STATE
@@ -67,9 +67,10 @@ uint32_t    sysStateMs      = 0;    // when did we enter this state
 bool        initSent        = false;
 
 // Timers
-uint32_t lastCtrlMs     = 0;
-uint32_t lastPressureMs = 0;
-uint32_t lastMqttMs     = 0;
+uint32_t lastCtrlMs          = 0;
+uint32_t lastPressureMs      = 0;
+uint32_t lastMqttMs          = 0;
+uint32_t lastMqttConnectMs   = 0;
 
 // Packet parsers
 Parser parserCN, parserZ1, parserZ2, parserZ3;
@@ -122,8 +123,10 @@ void sendToAH(const uint8_t* pkt, uint8_t len) {
 // =============================================================================
 void sendThermostatResponse(uint8_t zone) {
     const int dePins[3] = { Z1_DE_PIN, Z2_DE_PIN, Z3_DE_PIN };
-    HardwareSerial* hw = (zone == 0) ? &SerialZ1 : nullptr;
-    SoftwareSerial* sw = (zone == 1) ? &SerialZ2 : (zone == 2 ? &SerialZ3 : nullptr);
+    // Zones 0 and 1 now both use HardwareSerial (UART2 and UART0 respectively).
+    // Zone 2 still uses SoftwareSerial; sw->write() is synchronous at 4800 baud.
+    HardwareSerial* hw = (zone == 0) ? &SerialZ1 : (zone == 1 ? &SerialZ2 : nullptr);
+    SoftwareSerial* sw = (zone == 2) ? &SerialZ3 : nullptr;
 
     uint8_t respBuf[64];
     buildStatusResponse(respBuf, ah, zones[zone].setpointC, zones[zone].roomTempC);
@@ -133,13 +136,11 @@ void sendThermostatResponse(uint8_t zone) {
     digitalWrite(dePins[zone], HIGH);
     delayMicroseconds(50);   // DE setup time
 
+    // hw->flush() blocks until the hardware TX buffer drains.
+    // sw->write() is synchronous — it bit-bangs each byte before returning.
+    // Neither needs an additional delay before releasing DE.
     if (hw) { hw->write(respBuf, respLen); hw->flush(); }
     else if (sw) { sw->write(respBuf, respLen); }
-
-    // At 4800 baud: 1 byte ≈ 2.08ms (8E1 = 11 bits/byte)
-    // Wait for all bytes to clock out before releasing the bus
-    uint32_t txTimeMs = (uint32_t)respLen * 3;   // generous ~3ms/byte margin
-    delay(txTimeMs);
 
     // Switch MAX485 back to receive
     digitalWrite(dePins[zone], LOW);
@@ -176,18 +177,22 @@ void processThermostatPkt(uint8_t zone, const GreePkt* pkt) {
 
         // Decode room temp from thermostat packet.
         // PKT_OFF_ROOM_TEMP (byte 20) is our best guess — verify during Phase 2.
-        // If rtByte is 0 (not yet confirmed), fall back to AH indoor sensor.
-        if (rtByte != 0x00) {
+        // ROOM_TEMP_BYTE_VERIFIED (config.h) gates whether 0x00 is a valid 16°C
+        // reading or an unconfirmed padding byte. Without the flag, 16°C falls
+        // back to the AH indoor sensor to avoid acting on garbage data.
+        if (ROOM_TEMP_BYTE_VERIFIED || rtByte != 0x00) {
             zones[zone].roomTempC = TEMP_DECODE(rtByte);
         } else {
-            zones[zone].roomTempC = (uint8_t)(ah.indoorTempC);
+            zones[zone].roomTempC = (uint8_t)constrain(ah.indoorTempC, 16, 30);
         }
 
         // Calculate demand delta (°C, positive = calling for heat)
         zones[zone].deltaC = (int8_t)zones[zone].setpointC
                            - (int8_t)zones[zone].roomTempC;
 
-        // Determine calling state from mode byte
+        // Determine calling state from mode byte.
+        // Auto mode resolves to Heat or Cool based on deltaC sign so that
+        // aggregateZones() and updateControl() never see ZoneMode::Auto.
         uint8_t modeNibble = modeRaw & 0xF0;
         if (modeRaw == MODE_OFF || modeRaw == 0x10) {
             zones[zone].calling = false;
@@ -199,8 +204,16 @@ void processThermostatPkt(uint8_t zone, const GreePkt* pkt) {
             zones[zone].calling = (zones[zone].deltaC < 0);
             zones[zone].mode    = ZoneMode::Cool;
         } else if (modeNibble == 0x80) {
-            zones[zone].calling = (abs(zones[zone].deltaC) > 1);
-            zones[zone].mode    = ZoneMode::Auto;
+            if (zones[zone].deltaC > 1) {
+                zones[zone].calling = true;
+                zones[zone].mode    = ZoneMode::Heat;
+            } else if (zones[zone].deltaC < -1) {
+                zones[zone].calling = true;
+                zones[zone].mode    = ZoneMode::Cool;
+            } else {
+                zones[zone].calling = false;
+                zones[zone].mode    = ZoneMode::Off;
+            }
         }
 
         Serial.printf("[Z%d] cmd:0x%02X mode:0x%02X sp:%d°C rt:%d°C Δ:%+d calling:%s\n",
@@ -233,7 +246,7 @@ void processThermostatPkt(uint8_t zone, const GreePkt* pkt) {
 // =============================================================================
 struct ZoneAggregation {
     uint8_t activeCount     = 0;
-    uint8_t maxSetpointC    = DEFAULT_SETPOINT_C;
+    uint8_t maxSetpointC    = 0;   // 0 so the first active zone always overwrites
     int8_t  maxDeltaC       = 0;
     uint8_t virtualRoomC    = DEFAULT_SETPOINT_C;
     ZoneMode dominantMode   = ZoneMode::Off;
@@ -572,8 +585,9 @@ void setup() {
     SerialZ1.begin(4800, SERIAL_8E1, Z1_RX_PIN, Z1_TX_PIN);
     pinMode(Z1_DE_PIN, OUTPUT); digitalWrite(Z1_DE_PIN, LOW);
 
-    // Zone 2 + 3 RS485 (SoftwareSerial — no parity, see config.h note)
-    SerialZ2.begin(4800);
+    // Zone 2 RS485 — UART0 remapped to Z2 pins, full 8E1 parity
+    SerialZ2.begin(4800, SERIAL_8E1, Z2_RX_PIN, Z2_TX_PIN);
+    // Zone 3 RS485 — SoftwareSerial 8N1 (parity not supported — see config.h)
     SerialZ3.begin(4800);
     pinMode(Z2_DE_PIN, OUTPUT); digitalWrite(Z2_DE_PIN, LOW);
     pinMode(Z3_DE_PIN, OUTPUT); digitalWrite(Z3_DE_PIN, LOW);
@@ -624,7 +638,11 @@ void loop() {
 
     // WiFi / MQTT maintenance
     if (WiFi.status() == WL_CONNECTED) {
-        if (!mqtt.connected()) mqtt.connect(MQTT_CLIENT_ID);
+        if (!mqtt.connected() &&
+            now - lastMqttConnectMs >= MQTT_RECONNECT_MS) {
+            lastMqttConnectMs = now;
+            mqtt.connect(MQTT_CLIENT_ID);
+        }
         mqtt.loop();
     }
 
@@ -681,6 +699,17 @@ void loop() {
     if (now - lastPressureMs >= PRESSURE_READ_MS) {
         lastPressureMs = now;
         pressureSensor.update();
+    }
+
+    // ── Phase 2: periodic AH status print ────────────────────────────────────
+    // Prints the "[AH]" lines the commissioning guide tells you to watch for.
+    static uint32_t lastAHPrintMs = 0;
+    if (phase == PHASE_POLL && now - lastAHPrintMs >= 5000) {
+        lastAHPrintMs = now;
+        Serial.printf("[AH] pwr:%s mode:0x%02X setpt:%d°C indoor:%d°C commOk:%s\n",
+                      ah.powered ? "ON" : "OFF", ah.modeRaw,
+                      ah.setpointC, ah.indoorTempC,
+                      ah.commOk ? "Y" : "N");
     }
 
     // ── Main control ──────────────────────────────────────────────────────────

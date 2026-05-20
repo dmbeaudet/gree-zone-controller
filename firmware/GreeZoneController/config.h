@@ -26,14 +26,18 @@
 #define Z1_TX_PIN       15
 #define Z1_DE_PIN       14    // MAX485 DE+RE tied together
 
-// Zone 2 RS485 — SoftwareSerial
-// NOTE: SoftwareSerial lacks 8E1 parity support. If checksum errors are
-// frequent on zones 2/3, upgrade to SC16IS752 I2C dual UART expander.
+// Zone 2 RS485 — HardwareSerial UART0 remapped to Z2 pins (full 8E1 support)
+// REQUIRED: set "USB CDC On Boot" = Enabled in Arduino IDE board settings,
+// or compile with: --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc
+// This moves Serial (debug) to native USB-CDC and frees UART0 for Zone 2.
 #define Z2_RX_PIN       12
 #define Z2_TX_PIN       11
 #define Z2_DE_PIN       13
 
-// Zone 3 RS485 — SoftwareSerial
+// Zone 3 RS485 — SoftwareSerial (8N1 only — 8E1 parity NOT supported)
+// Zone 3 thermostat communication will fail due to parity framing errors.
+// Fix: replace with SC16IS752 I2C dual-UART expander (~$8, shares I2C bus).
+// See COMMISSIONING.md §10 for wiring details.
 #define Z3_RX_PIN        9
 #define Z3_TX_PIN        8
 #define Z3_DE_PIN       10
@@ -106,6 +110,9 @@
 // MQTT publish interval (ms)
 #define MQTT_INTERVAL_MS        5000
 
+// Minimum interval between MQTT reconnect attempts (ms)
+#define MQTT_RECONNECT_MS       5000
+
 // ── Anti-short-cycle protection ───────────────────────────────────────────────
 
 // Minimum time system must run before it can turn off (ms)
@@ -114,6 +121,13 @@
 
 // Minimum off time before system can turn back on (ms)
 #define MIN_OFF_TIME_MS         (3 * 60 * 1000)    // 3 minutes
+
+// ── Commissioning flags ───────────────────────────────────────────────────────
+
+// Set to true after Phase 2 commissioning confirms PKT_OFF_ROOM_TEMP is correct.
+// When false, a 0x00 encoded byte at that position falls back to AH indoor sensor
+// (prevents misreading 16°C as "byte not present" after commissioning is complete).
+#define ROOM_TEMP_BYTE_VERIFIED  false
 
 // ── Temperature & zone ────────────────────────────────────────────────────────
 
