@@ -102,6 +102,17 @@ enum class ZoneMode    : uint8_t { Off, Heat, Cool, Auto };
 enum class DamperState : uint8_t { Closed, Open };
 enum class SystemState : uint8_t { Off, MinOffHold, Running, MinOnHold };
 
+// Aggregated view across all active zones — used by updateControl()
+// Defined here (not in the .ino) so PlatformIO's auto-generated function
+// prototypes can reference it before any function definitions are seen.
+struct ZoneAggregation {
+    uint8_t  activeCount   = 0;
+    uint8_t  maxSetpointC  = 0;   // 0 so first active zone always overwrites
+    int8_t   maxDeltaC     = 0;
+    uint8_t  virtualRoomC  = DEFAULT_SETPOINT_C;
+    ZoneMode dominantMode  = ZoneMode::Off;
+};
+
 struct ZoneState {
     bool        calling      = false;
     ZoneMode    mode         = ZoneMode::Off;

@@ -243,15 +243,8 @@ void processThermostatPkt(uint8_t zone, const GreePkt* pkt) {
 // Synthesise a virtual room temp = commandedSetpoint - maxDelta.
 // This is what we send to the air handler, telling the outdoor inverter
 // exactly how hard to work based on the worst-case zone.
+// (ZoneAggregation struct is defined in protocol.h)
 // =============================================================================
-struct ZoneAggregation {
-    uint8_t activeCount     = 0;
-    uint8_t maxSetpointC    = 0;   // 0 so the first active zone always overwrites
-    int8_t  maxDeltaC       = 0;
-    uint8_t virtualRoomC    = DEFAULT_SETPOINT_C;
-    ZoneMode dominantMode   = ZoneMode::Off;
-};
-
 ZoneAggregation aggregateZones() {
     ZoneAggregation agg;
     for (uint8_t z = 0; z < 3; z++) {
