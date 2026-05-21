@@ -1,5 +1,5 @@
 // =============================================================================
-// GreeZoneController.ino — v0.2
+// GreeZoneController.cpp — v0.2
 // =============================================================================
 // Custom 3-zone controller for Gree FXE48HP230V1R32AH
 // Replaces Emerson EMM-3. Retains full Gree RS485 serial protocol.
@@ -17,7 +17,7 @@
 //   ESP32-S3 DevKit, 3x MAX485, SDP810-500Pa (I2C),
 //   3-ch relay board, 24VAC transformer, 24V→5V buck
 //
-// Libraries (Arduino Library Manager):
+// Libraries (platformio.ini lib_deps):
 //   PubSubClient, EspSoftwareSerial
 // =============================================================================
 
@@ -616,8 +616,6 @@ void setup() {
     sysState     = SystemState::Off;
     sysStateMs   = millis();
 
-    // Send one-time handshake to air handler (safe even in listen mode —
-    // we just won't transmit it until Phase 2)
     Serial.printf("[BOOT] Phase %d active\n", phase);
     if (phase == PHASE_LISTEN)
         Serial.println("[BOOT] RX-only: watching for 7E 7E packets on CN port...");
